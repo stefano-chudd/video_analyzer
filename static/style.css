@@ -72,6 +72,9 @@ canvas { display: block; width: 100%; border-radius: 6px; background: #000; }
 #volLabel { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--dim); }
 #vol { accent-color: var(--accent); }
 #transport canvas { margin-top: 10px; }
+#vocalPanel { margin-bottom: 14px; }
+.stats { display: flex; gap: 20px; flex-wrap: wrap; font-size: 13px; align-items: baseline; }
+.stats b { color: var(--accent); }
 
 footer { font-size: 12px; margin-top: 8px; }
 footer code { background: var(--panel); padding: 1px 5px; border-radius: 4px; }

@@ -61,6 +61,21 @@ the app falls back to audio-only mode when no YouTube video ID is detected.
 - No zoom/scrub on the spectrogram (use the YouTube player's seek bar; sync follows).
 - YouTube ads can confuse the drift correction for a few seconds — it recovers.
 
+## v2 experiment: vocal analysis (pitch & vibrato)
+
+After the spectrogram is built, the app runs YIN pitch tracking on the decoded
+audio (downsampled to 8 kHz, 64 ms window, 32 ms hop) and shows:
+
+- **Pitch contour** — f0 over the full track on a semitone scale, playhead-synced
+- **Tessitura histogram** — where the voice actually lives (semitone bins C2–C7)
+- **Stats** — % voiced, range, median, tessitura peak
+- **Vibrato** — rate (Hz) and depth (cents) from stable voiced segments,
+  with depth corrected for the analysis window's averaging
+
+Caveat: this is experimental. Pitch tracking on full mixes is noisy — the
+detector gates on periodicity confidence, but sparse arrangements (solo voice,
+THE FIRST TAKE style) give far cleaner results than dense band mixes.
+
 ## Files
 
 ```

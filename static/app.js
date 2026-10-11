@@ -11,6 +11,8 @@
     wavePanel: $('wavePanel'), wave: $('wave'),
     transport: $('transport'), playBtn: $('playBtn'),
     tCur: $('tCur'), tTotal: $('tTotal'), vol: $('vol'), fft: $('fft'),
+    vocalPanel: $('vocalPanel'), vocalStats: $('vocalStats'),
+    pitchContour: $('pitchContour'), pitchHist: $('pitchHist'),
   };
 
   // ---------------- state ----------------
@@ -24,6 +26,7 @@
   let player = null, ytApiReady = false, currentVid = null;
   let statusToken = 0;
   let lastDrift = 0, lastTimeShown = -1;
+  let pitchData = null, pitchContourImg = null;
 
   // ---------------- helpers ----------------
   function setStatus(msg, isErr) {
@@ -128,9 +131,10 @@
     pauseAll();
     ready = false;
     spec = specImg = peaks = waveImg = null;
+    pitchData = pitchContourImg = null;
     duration = 0;
     lastDrift = 0; lastTimeShown = -1;
-    for (const c of [ui.spec, ui.wave, ui.fft]) {
+    for (const c of [ui.spec, ui.wave, ui.fft, ui.pitchContour, ui.pitchHist]) {
       const ctx = c.getContext('2d');
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, c.width, c.height);
@@ -138,6 +142,7 @@
     ui.stage.hidden = true;
     ui.wavePanel.hidden = true;
     ui.transport.hidden = true;
+    ui.vocalPanel.hidden = true;
   }
 
   // ---------------- load pipeline ----------------
@@ -165,13 +170,14 @@
     }
 
     if (myToken === statusToken) myToken = setStatus('Decoding + analyzing audio…');
+    let buf = null, mono = null;
     try {
       actx = actx || new (window.AudioContext || window.webkitAudioContext)();
       if (actx.state === 'suspended') await actx.resume();
       const ab = await (await fetch(info.audio_url)).arrayBuffer();
-      const buf = await actx.decodeAudioData(ab);
+      buf = await actx.decodeAudioData(ab);
       duration = buf.duration || info.duration || 0;
-      const mono = DSP.downmixToMono(buf);
+      mono = DSP.downmixToMono(buf);
       spec = DSP.computeSpectrogram(mono, buf.sampleRate);
       specImg = DSP.renderSpectrogramImage(spec);
       peaks = DSP.computePeaks(mono, 1400);
@@ -180,6 +186,43 @@
       if (myToken === statusToken) setStatus('Analysis failed: ' + e.message, true);
       ui.loadBtn.disabled = false;
       return;
+    }
+
+    // ---- v2 experiment: pitch & vibrato (non-fatal; v1 still works if it fails)
+    try {
+      myToken = setStatus('Analyzing pitch… (YIN, chunked)');
+      const pitchToken = myToken;
+      const probe = DSP.pitchTrack(mono, buf.sampleRate, { frameRange: [0, 0] });
+      const totalFrames = probe.totalFrames, pitchFps = probe.fps;
+      const CH = 1500;
+      let f0raw = new Float32Array(0);
+      let stale = false;
+      for (let a = 0; a < totalFrames; a += CH) {
+        if (pitchToken !== statusToken) { stale = true; break; } // superseded
+        const r = DSP.pitchTrack(mono, buf.sampleRate,
+          { frameRange: [a, Math.min(a + CH, totalFrames)] });
+        const cat = new Float32Array(f0raw.length + r.f0.length);
+        cat.set(f0raw); cat.set(r.f0, f0raw.length);
+        f0raw = cat;
+        myToken = setStatus(
+          `Analyzing pitch… ${Math.round(100 * Math.min(a + CH, totalFrames) / totalFrames)}%`);
+        await new Promise((res) => setTimeout(res, 0));
+      }
+      if (stale) return;
+      const f0smooth = DSP.smoothPitch(f0raw, 5);
+      pitchData = {
+        f0: f0smooth,
+        fps: pitchFps,
+        hist: DSP.pitchHistogram(f0smooth),
+        vib: DSP.analyzeVibrato(f0raw, pitchFps), // raw: smoothing erases vibrato
+        stats: DSP.pitchStats(f0smooth),
+      };
+      drawPitchContour();
+      drawPitchHist();
+      renderVocalStats();
+      ui.vocalPanel.hidden = false;
+    } catch (e) {
+      console.warn('pitch analysis failed:', e);
     }
 
     // Playback element = master clock. Analyser taps it for the live spectrum.
@@ -268,6 +311,103 @@
     ctx.fillRect(x - 1, 0, 2, c.height);
   }
 
+  // ---------------- vocal analysis rendering ----------------
+  function drawPitchContour() {
+    const c = ui.pitchContour, ctx = c.getContext('2d');
+    const W = c.width, H = c.height;
+    pitchContourImg = document.createElement('canvas');
+    pitchContourImg.width = W; pitchContourImg.height = H;
+    const g = pitchContourImg.getContext('2d');
+    g.fillStyle = '#000';
+    g.fillRect(0, 0, W, H);
+    const mMin = 36, mMax = 96; // C2..C7
+    const yOf = (m) => H - ((m - mMin) / (mMax - mMin)) * H;
+    g.strokeStyle = '#232c40';
+    g.fillStyle = '#8b94ab';
+    g.font = '10px sans-serif';
+    for (let m = 48; m <= 84; m += 12) {
+      const y = yOf(m);
+      g.beginPath(); g.moveTo(0, y + 0.5); g.lineTo(W, y + 0.5); g.stroke();
+      g.fillText(DSP.midiToName(m), 4, y - 3);
+    }
+    const { f0, fps } = pitchData;
+    const dur = f0.length / fps;
+    g.strokeStyle = '#ffb454';
+    g.lineWidth = 1.5;
+    g.beginPath();
+    let pen = false;
+    for (let i = 0; i < f0.length; i++) {
+      const v = f0[i];
+      if (v <= 0) { pen = false; continue; }
+      const x = (i / fps / dur) * W;
+      const y = yOf(DSP.hzToMidi(v));
+      if (!pen) { g.moveTo(x, y); pen = true; }
+      else g.lineTo(x, y);
+    }
+    g.stroke();
+    ctx.drawImage(pitchContourImg, 0, 0);
+  }
+
+  function drawPitchHist() {
+    const c = ui.pitchHist, ctx = c.getContext('2d');
+    const W = c.width, H = c.height;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+    const hist = pitchData.hist;
+    let mx = 0;
+    for (let i = 0; i < hist.length; i++) if (hist[i] > mx) mx = hist[i];
+    const bw = W / hist.length;
+    for (let i = 0; i < hist.length; i++) {
+      const h = mx ? (hist[i] / mx) * (H - 26) : 0;
+      const grad = ctx.createLinearGradient(0, H - 16 - h, 0, H - 16);
+      grad.addColorStop(0, '#ffb454');
+      grad.addColorStop(1, '#7a3c00');
+      ctx.fillStyle = grad;
+      ctx.fillRect(i * bw + 0.5, H - 16 - h, Math.max(1, bw - 1), h);
+    }
+    ctx.fillStyle = '#8b94ab';
+    ctx.font = '10px sans-serif';
+    for (let m = 36; m <= 96; m += 12) {
+      ctx.fillText(DSP.midiToName(m), (m - 36) * bw + 2, H - 3);
+    }
+  }
+
+  function renderVocalStats() {
+    const s = pitchData.stats, v = pitchData.vib;
+    const hz = (x) => x ? Math.round(x) + ' Hz' : '—';
+    const note = (x) => x ? DSP.midiToName(DSP.hzToMidi(x)) : '—';
+    let html =
+      `<span><b>${Math.round(s.voicedRatio * 100)}%</b> voiced</span>` +
+      `<span>Range <b>${note(s.minHz)}–${note(s.maxHz)}</b> ` +
+      `<span class="dim">(${hz(s.minHz)}–${hz(s.maxHz)})</span></span>` +
+      `<span>Tessitura peak <b>${tessituraPeak()}</b></span>` +
+      `<span>Median <b>${note(s.medianHz)}</b></span>`;
+    if (v.segments.length) {
+      html += `<span>Vibrato <b>${v.rateMedian.toFixed(1)} Hz</b> ±<b>${Math.round(v.depthMedian)}¢</b> ` +
+        `<span class="dim">(${v.segments.length} segments)</span></span>`;
+    } else {
+      html += `<span class="dim">No stable vibrato detected</span>`;
+    }
+    ui.vocalStats.innerHTML = html;
+  }
+
+  function tessituraPeak() {
+    const hist = pitchData.hist;
+    let pk = 0;
+    for (let i = 1; i < hist.length; i++) if (hist[i] > hist[pk]) pk = i;
+    return DSP.midiToName(pk + 36);
+  }
+
+  function drawContourHead(t) {
+    if (!pitchContourImg || !pitchData) return;
+    const c = ui.pitchContour, ctx = c.getContext('2d');
+    ctx.drawImage(pitchContourImg, 0, 0);
+    const dur = pitchData.f0.length / pitchData.fps;
+    const x = dur > 0 ? (t / dur) * c.width : 0;
+    ctx.fillStyle = 'rgba(255,180,84,0.95)';
+    ctx.fillRect(x - 1, 0, 2, c.height);
+  }
+
   function drawFFT() {
     const c = ui.fft, ctx = c.getContext('2d');
     const W = c.width, H = c.height;
@@ -300,6 +440,7 @@
     const t = audioEl.currentTime || 0;
     drawSpectrogram(t);
     drawWavehead(t);
+    drawContourHead(t);
     if (analyser) drawFFT();
     const whole = Math.floor(t);
     if (whole !== lastTimeShown) {

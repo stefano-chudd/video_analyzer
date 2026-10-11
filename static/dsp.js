@@ -207,9 +207,253 @@
     return cv;
   }
 
+  /* ---------------- pitch & vibrato (v2 experiment) ---------------- */
+
+  /* Box-filter decimation. Good enough anti-aliasing for f0 work. */
+  function downsample(mono, fromRate, toRate) {
+    const ratio = fromRate / toRate;
+    const len = Math.max(1, Math.floor(mono.length / ratio));
+    const out = new Float32Array(len);
+    const win = Math.max(1, Math.round(ratio));
+    for (let i = 0; i < len; i++) {
+      const start = Math.floor(i * ratio);
+      let s = 0, n = 0;
+      for (let k = 0; k < win && start + k < mono.length; k++) {
+        s += mono[start + k]; n++;
+      }
+      out[i] = n ? s / n : 0;
+    }
+    return out;
+  }
+
+  /**
+   * YIN pitch tracking (de Cheveigné). Operates on audio downsampled to 8 kHz
+   * for speed; returns per-frame f0 in Hz (0 = unvoiced/confidence too low).
+   * opts: minF0, maxF0, threshold, frameRange:[a,b) for chunked progress.
+   * Returns { f0, conf, fps, sr }.
+   */
+  function pitchTrack(mono, sampleRate, opts) {
+    opts = opts || {};
+    const sr = 8000;
+    const ds = downsample(mono, sampleRate, sr);
+    // 64 ms window: short enough not to smear 5-8 Hz vibrato badly, long
+    // enough for 2+ periods at minF0. (A 128 ms window was shown to
+    // attenuate 6 Hz vibrato depth ~3.5x via window averaging.)
+    const W = 512;                  // 64 ms window
+    const hop = 256;                // 32 ms -> 31.25 fps (enough for 5-8 Hz vibrato)
+    const minF0 = opts.minF0 || 55;
+    const maxF0 = opts.maxF0 || 1200;
+    const minTau = Math.max(2, Math.floor(sr / maxF0));
+    const maxTau = Math.min(W - 1, Math.ceil(sr / minF0));
+    const threshold = opts.threshold || 0.12;
+    const accept = 0.25;            // looser bar for the argmin fallback
+
+    const total = Math.max(0, Math.floor((ds.length - W - maxTau) / hop) + 1);
+    const range = opts.frameRange || [0, total];
+    const a = Math.max(0, range[0]), b = Math.min(total, range[1]);
+    const n = Math.max(0, b - a);
+    const f0 = new Float32Array(n);
+    const conf = new Float32Array(n);
+    const d = new Float64Array(maxTau + 1);
+    const cm = new Float64Array(maxTau + 1);
+    const onProgress = opts.onProgress;
+
+    for (let fi = 0; fi < n; fi++) {
+      const f = a + fi;
+      const off = f * hop;
+      // cheap energy gate first (~ -60 dBFS)
+      let e = 0;
+      for (let i = 0; i < W; i += 4) { const v = ds[off + i]; e += v * v; }
+      if (e / (W / 4) < 1e-6) continue;
+
+      for (let tau = 1; tau <= maxTau; tau++) {
+        let s = 0;
+        for (let j = 0; j < W; j++) {
+          const diff = ds[off + j] - ds[off + j + tau];
+          s += diff * diff;
+        }
+        d[tau] = s;
+      }
+      let rs = 0;
+      cm[0] = 1;
+      for (let tau = 1; tau <= maxTau; tau++) {
+        rs += d[tau];
+        cm[tau] = (d[tau] * tau) / rs;
+      }
+      // first dip below threshold at tau >= minTau, walked to local minimum
+      let tauEst = -1;
+      for (let tau = minTau; tau <= maxTau; tau++) {
+        if (cm[tau] < threshold) {
+          while (tau + 1 <= maxTau && cm[tau + 1] < cm[tau]) tau++;
+          tauEst = tau;
+          break;
+        }
+      }
+      if (tauEst < 0) {
+        // fallback: global minimum, accepted only if reasonably periodic
+        let m = minTau;
+        for (let tau = minTau + 1; tau <= maxTau; tau++) {
+          if (cm[tau] < cm[m]) m = tau;
+        }
+        if (cm[m] < accept) tauEst = m;
+      }
+      if (tauEst < 0) continue; // unvoiced
+
+      // parabolic interpolation on the normalized difference
+      if (tauEst > minTau && tauEst < maxTau) {
+        const y0 = cm[tauEst - 1], y1 = cm[tauEst], y2 = cm[tauEst + 1];
+        const denom = y0 - 2 * y1 + y2;
+        if (denom !== 0) {
+          const shift = 0.5 * (y0 - y2) / denom;
+          tauEst += Math.max(-1, Math.min(1, shift));
+        }
+      }
+      const fEst = sr / tauEst;
+      if (fEst < minF0 * 0.9 || fEst > maxF0 * 1.1) continue;
+      f0[fi] = fEst;
+      conf[fi] = Math.max(0, Math.min(1, 1 - cm[Math.round(tauEst)]));
+    }
+
+    // NOTE: no smoothing here — callers smooth for display/stats (smoothPitch)
+    // but must use the RAW track for vibrato analysis (smoothing erases it).
+    if (onProgress) onProgress(1);
+    return { f0, conf, fps: sr / hop, sr, frameOffset: a, totalFrames: total };
+  }
+
+  /** N-frame median smoothing over voiced runs (for display/stats only). */
+  function smoothPitch(f0, width) {
+    width = width || 5;
+    const half = width >> 1, n = f0.length;
+    const out = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      if (!f0[i]) continue;
+      const vals = [];
+      for (let k = -half; k <= half; k++) {
+        const j = i + k;
+        if (j >= 0 && j < n && f0[j]) vals.push(f0[j]);
+      }
+      if (vals.length >= 3) {
+        vals.sort((x, y) => x - y);
+        out[i] = vals[vals.length >> 1];
+      } else {
+        out[i] = f0[i];
+      }
+    }
+    return out;
+  }
+
+  const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  function midiToName(m) {
+    m = Math.round(m);
+    return NOTE_NAMES[((m % 12) + 12) % 12] + (Math.floor(m / 12) - 1);
+  }
+  function hzToMidi(hz) { return 69 + 12 * Math.log2(hz / 440); }
+
+  /** Semitone histogram of voiced frames, MIDI 36..96 (C2..C7). */
+  function pitchHistogram(f0) {
+    const bins = new Float32Array(61);
+    for (let i = 0; i < f0.length; i++) {
+      const v = f0[i];
+      if (v <= 0) continue;
+      const m = Math.round(hzToMidi(v));
+      if (m >= 36 && m <= 96) bins[m - 36]++;
+    }
+    return bins;
+  }
+
+  /**
+   * Vibrato analysis on a pitch track. Finds stable voiced segments (>=0.4 s,
+   * limited drift), detrends each, and measures modulation rate (zero
+   * crossings) and depth (RMS->peak in cents, corrected for the YIN window's
+   * averaging via the sinc response at the measured rate). Returns
+   * { segments:[{start,end,rateHz,depthCents}], rateMedian, depthMedian }.
+   * opts.winSec: YIN window duration in seconds (default 0.064).
+   */
+  function analyzeVibrato(f0, fps, opts) {
+    opts = opts || {};
+    const winSec = opts.winSec || 0.064;
+    const minLen = Math.floor(0.4 * fps);
+    const segs = [];
+    let i = 0;
+    while (i < f0.length) {
+      if (f0[i] <= 0) { i++; continue; }
+      let j = i;
+      while (j < f0.length && f0[j] > 0) j++;
+      if (j - i >= minLen) {
+        const sub = f0.subarray(i, j);
+        const srt = Array.from(sub).sort((x, y) => x - y);
+        const med = srt[srt.length >> 1];
+        // reject drifting lines (slides between notes, not vibrato):
+        // compare median of first vs last third *in time*
+        const n3 = Math.max(1, Math.floor(sub.length / 3));
+        const head = Array.from(sub.subarray(0, n3)).sort((x, y) => x - y);
+        const tail = Array.from(sub.subarray(sub.length - n3)).sort((x, y) => x - y);
+        const medA = head[head.length >> 1], medB = tail[tail.length >> 1];
+        const drift = Math.abs(1200 * Math.log2(medB / medA));
+        if (drift < 120) {
+          const cents = new Float64Array(sub.length);
+          for (let k = 0; k < sub.length; k++) {
+            cents[k] = 1200 * Math.log2(sub[k] / med);
+          }
+          let zc = 0;
+          for (let k = 1; k < cents.length; k++) {
+            if ((cents[k - 1] < 0) !== (cents[k] < 0)) zc++;
+          }
+          const dur = sub.length / fps;
+          const rate = zc / (2 * dur);
+          let ss = 0;
+          for (let k = 0; k < cents.length; k++) ss += cents[k] * cents[k];
+          let depth = Math.sqrt(ss / cents.length) * Math.SQRT2;
+          // undo YIN window averaging: |H(f)| = |sinc(pi*f*winSec)|
+          const x = Math.PI * rate * winSec;
+          const atten = x > 1e-6 ? Math.abs(Math.sin(x) / x) : 1;
+          depth /= Math.max(0.33, Math.min(1, atten));
+          if (rate >= 3.5 && rate <= 9 && depth >= 8 && depth <= 250) {
+            segs.push({ start: i / fps, end: j / fps, rateHz: rate, depthCents: depth });
+          }
+        }
+      }
+      i = j;
+    }
+    const medOf = (arr) => {
+      if (!arr.length) return 0;
+      const s = arr.slice().sort((x, y) => x - y);
+      return s[s.length >> 1];
+    };
+    return {
+      segments: segs,
+      rateMedian: medOf(segs.map((s) => s.rateHz)),
+      depthMedian: medOf(segs.map((s) => s.depthCents)),
+    };
+  }
+
+  /** Summary stats for the pitch track. */
+  function pitchStats(f0) {
+    let voiced = 0, mn = Infinity, mx = -Infinity;
+    const vals = [];
+    for (let i = 0; i < f0.length; i++) {
+      const v = f0[i];
+      if (v <= 0) continue;
+      voiced++;
+      vals.push(v);
+      if (v < mn) mn = v;
+      if (v > mx) mx = v;
+    }
+    vals.sort((a, b) => a - b);
+    return {
+      voicedFrames: voiced,
+      voicedRatio: f0.length ? voiced / f0.length : 0,
+      minHz: voiced ? mn : 0,
+      maxHz: voiced ? mx : 0,
+      medianHz: voiced ? vals[vals.length >> 1] : 0,
+    };
+  }
+
   const api = {
     hann, fft, downmixToMono, computeSpectrogram, computePeaks,
     renderSpectrogramImage, INFERNO_STOPS, buildLUT, LUT,
+    downsample, pitchTrack, smoothPitch, pitchHistogram, analyzeVibrato, pitchStats,
+    midiToName, hzToMidi, NOTE_NAMES,
   };
 
   if (typeof module !== 'undefined' && module.exports) {

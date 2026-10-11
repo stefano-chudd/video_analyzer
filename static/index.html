@@ -41,6 +41,15 @@
   <canvas id="wave" width="1200" height="110"></canvas>
 </section>
 
+<section id="vocalPanel" class="panel" hidden>
+  <div class="panel-title">Vocal analysis — pitch &amp; vibrato <span class="dim">experimental · YIN pitch tracking</span></div>
+  <div id="vocalStats" class="stats"></div>
+  <div class="panel-title" style="margin-top:10px">Pitch contour <span class="dim">full track · semitone scale</span></div>
+  <canvas id="pitchContour" width="1200" height="170"></canvas>
+  <div class="panel-title" style="margin-top:10px">Tessitura <span class="dim">where the voice actually lives</span></div>
+  <canvas id="pitchHist" width="700" height="220"></canvas>
+</section>
+
 <section id="transport" hidden>
   <div id="transportRow">
     <button id="playBtn">▶ Play</button>
