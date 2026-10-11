@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SpecTube — YouTube audio spectrogram lab</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>SpecTube <span class="tag">v1 prototype</span></h1>
+  <p>Paste a YouTube link. The video plays while a live spectrogram paints beside it —
+     waveform and spectrum below. The spectrogram is causal: it never shows the future.</p>
+</header>
+
+<section id="controls">
+  <input id="url" type="text" placeholder="https://www.youtube.com/watch?v=…" spellcheck="false" autocomplete="off">
+  <button id="loadBtn">Load &amp; analyze</button>
+  <div id="status" role="status">Idle — paste a link to begin.</div>
+</section>
+
+<main id="stage" hidden>
+  <div class="panel" id="videoWrap">
+    <div class="panel-title">Video <span id="vtitle" class="dim"></span></div>
+    <div id="ytwrap"><div id="ytplayer"></div></div>
+    <div id="audioOnlyNote" class="dim" hidden>Audio-only mode — no YouTube video ID detected in that URL.</div>
+  </div>
+  <div class="panel">
+    <div class="panel-title">Live spectrogram <span class="dim">log frequency · inferno</span></div>
+    <div id="specWrap">
+      <canvas id="spec" width="960" height="360"></canvas>
+      <div class="freq-labels"><span>16k</span><span>30</span></div>
+    </div>
+    <div id="specTimes"><span id="tWinStart">0:00</span><span id="tWinEnd">0:00</span></div>
+  </div>
+</main>
+
+<section id="wavePanel" class="panel" hidden>
+  <div class="panel-title">Waveform <span class="dim">full track</span></div>
+  <canvas id="wave" width="1200" height="110"></canvas>
+</section>
+
+<section id="transport" hidden>
+  <div id="transportRow">
+    <button id="playBtn">▶ Play</button>
+    <span id="tCur">0:00</span><span class="dim"> / </span><span id="tTotal">0:00</span>
+    <label id="volLabel">Volume <input id="vol" type="range" min="0" max="1" step="0.01" value="0.9"></label>
+  </div>
+  <div class="panel-title" style="margin-top:10px">Live spectrum <span class="dim">FFT · log frequency</span></div>
+  <canvas id="fft" width="1200" height="130"></canvas>
+</section>
+
+<footer class="dim">
+  Audio is downloaded once via yt-dlp, cached in <code>downloads/</code>, and played back locally —
+  the YouTube player stays muted and follows the audio clock.
+</footer>
+
+<script src="dsp.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
