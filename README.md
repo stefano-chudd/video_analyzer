@@ -63,15 +63,24 @@ and their
 The app detects this failure and tells you in the status bar.
 
 **Challenge failures** (`The page needs to be reloaded`, or warnings about
-`Signature solving failed` / `n challenge solving failed`): yt-dlp needs a
-JavaScript runtime (Deno or Node.js) to solve YouTube's signature challenges.
-Install one, e.g. `brew install deno`, and restart. The server warns at startup
-if none is found, and names this cause in the error if it happens anyway. To
-point yt-dlp at a specific runtime:
+`Signature solving failed` / `n challenge solving failed`): yt-dlp needs two
+things to solve YouTube's signature challenges —
+
+1. a JavaScript runtime: install Deno (recommended) or Node.js ≥ 22
+   (`brew install deno`), and
+2. the EJS solver scripts: PyPI installs (`pip`/`uv pip`) don't bundle them.
+   The server enables `--remote-components ejs:github` automatically when the
+   `yt-dlp-ejs` package isn't installed. Alternatively, install
+   `yt-dlp[default]` (which includes it) and re-lock.
+
+The server warns at startup if no JS runtime is found on PATH, and names this
+cause in the error if it happens anyway. To point yt-dlp at a specific runtime:
 
 ```bash
 python server.py --js-runtimes deno      # or node, or node:/path/to/node
 ```
+
+(Deno and Node are the safe picks — Bun support is deprecated upstream.)
 
 **No formats** (`Requested format is not available`): YouTube sometimes offers
 one player client an empty format list. The server automatically walks a client

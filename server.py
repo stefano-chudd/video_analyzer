@@ -50,9 +50,24 @@ def client_argv(client):
     return ["--extractor-args", f"youtube:player_client={client.strip()}"]
 
 
+def ejs_remote_args():
+    """If the EJS challenge-solver package isn't installed alongside yt-dlp
+    (PyPI installs don't bundle it), have yt-dlp fetch it from GitHub."""
+    try:
+        import importlib.util
+        if importlib.util.find_spec("yt_dlp_ejs") is not None:
+            return []
+    except Exception:
+        pass
+    sys.stderr.write(
+        "ytspec: yt-dlp-ejs solver not installed; enabling "
+        "--remote-components ejs:github\n")
+    return ["--remote-components", "ejs:github"]
+
+
 def build_server_config(cli):
     """Returns (base_argv, client_cascade)."""
-    base = [sys.executable, "-m", "yt_dlp"]
+    base = [sys.executable, "-m", "yt_dlp"] + ejs_remote_args()
     if cli.cookies_from_browser:
         base += ["--cookies-from-browser", cli.cookies_from_browser]
     if cli.cookies:
