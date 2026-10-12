@@ -62,13 +62,15 @@ and their
 [tips on exporting YouTube cookies](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies).
 The app detects this failure and tells you in the status bar.
 
-**No formats** (`Requested format is not available`): YouTube sometimes offers
-the `android` player client (our bot-check workaround) an empty format list.
-The server automatically retries once with yt-dlp's default clients. If it
-still fails, you can change or drop the override yourself:
+**No formats** (`Requested format is not available`) or **stale page**
+(`The page needs to be reloaded`): YouTube sometimes offers one player client
+an empty or broken response. The server automatically walks a client cascade
+(`android` → `ios` → `web`) until one works, and reuses the winner for the
+download. If all fail, the error names the clients tried. You can put your own
+preference first:
 
 ```bash
-python server.py --player-client web      # or ios, tv, default (no override)
+python server.py --player-client web      # or ios, android, default (yt-dlp chooses)
 ```
 
 Treat `cookies.txt` like a password: it grants access to your YouTube account.

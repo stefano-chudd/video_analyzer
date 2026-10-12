@@ -32,35 +32,44 @@ STATIC_DIR = os.path.join(ROOT, "static")
 DOWNLOAD_DIR = os.path.join(ROOT, "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-YTDLP = None       # full base argv (built in main)
-YTDLP_NO_PC = None  # same, minus the player-client override (fallback)
+YTDLP_BASE = None    # [python, -m, yt_dlp] + cookie args (no player client)
+CLIENT_CASCADE = None  # e.g. ["android", "ios", "web"]; tried in order
 # v1 guardrail: decoding the full audio into memory gets heavy past this.
 MAX_DURATION_SEC = 20 * 60
 
+# Failures worth trying the next player client for.
+RETRYABLE_ERRORS = ("Requested format is not available", "needs to be reloaded")
+# Failures where other clients won't help (fail fast instead).
+AUTH_ERRORS = ("not a bot", "Sign in to confirm")
 
-def build_ytdlp_bases(cli):
-    """Build the yt-dlp base argv, plus a fallback without the player-client
-    override (YouTube sometimes offers the overridden client no formats)."""
-    pre = [sys.executable, "-m", "yt_dlp"]
-    suffix = []
+
+def client_argv(client):
+    """--extractor-args for a player client; [] = yt-dlp's own default."""
+    if not client or client.strip().lower() in ("default", "none"):
+        return []
+    return ["--extractor-args", f"youtube:player_client={client.strip()}"]
+
+
+def build_server_config(cli):
+    """Returns (base_argv, client_cascade)."""
+    base = [sys.executable, "-m", "yt_dlp"]
     if cli.cookies_from_browser:
-        suffix += ["--cookies-from-browser", cli.cookies_from_browser]
+        base += ["--cookies-from-browser", cli.cookies_from_browser]
     if cli.cookies:
         if not os.path.isfile(cli.cookies):
             sys.stderr.write(f"ERROR: cookies file not found: {cli.cookies}\n")
             sys.exit(1)
-        suffix += ["--cookies", cli.cookies]
+        base += ["--cookies", cli.cookies]
     pc = (cli.player_client or "android").strip().lower()
-    if pc in ("default", "none", ""):
-        return pre + suffix, pre + suffix  # no override; fallback is a no-op
-    pc_args = ["--extractor-args", f"youtube:player_client={pc}"]
-    return pre + pc_args + suffix, pre + suffix
-
-
-# Kept for compatibility with earlier tests/scripts.
-def build_ytdlp_base(cli):
-    full, _ = build_ytdlp_bases(cli)
-    return full
+    cascade = []
+    if pc == "default":
+        cascade.append("default")  # yt-dlp's own internal client battery first
+    elif pc not in ("none", ""):
+        cascade.append(pc)
+    for c in ("android", "ios", "web"):
+        if c not in cascade:
+            cascade.append(c)
+    return base, cascade
 
 
 def botcheck_hint(stderr_text):
@@ -76,7 +85,7 @@ def botcheck_hint(stderr_text):
 def check_ytdlp():
     try:
         out = subprocess.run(
-            YTDLP + ["--version"], capture_output=True, text=True, timeout=30
+            YTDLP_BASE + ["--version"], capture_output=True, text=True, timeout=30
         )
         return out.stdout.strip()
     except Exception:
@@ -85,24 +94,41 @@ def check_ytdlp():
 
 def run_ytdlp(args, timeout=900):
     return subprocess.run(
-        YTDLP + args, capture_output=True, text=True, timeout=timeout
+        YTDLP_BASE + args, capture_output=True, text=True, timeout=timeout
     )
 
 
-def run_ytdlp_resilient(args, timeout=900):
-    """Like run_ytdlp, but if YouTube offers the overridden player client no
-    formats ("Requested format is not available"), retry once with yt-dlp's
-    default clients. Cookies (if any) are kept for the retry."""
-    r = run_ytdlp(args, timeout)
-    if (r.returncode != 0 and YTDLP_NO_PC != YTDLP
-            and "Requested format is not available" in (r.stderr or "")):
-        sys.stderr.write(
-            "ytspec: player client offered no usable formats; "
-            "retrying with default clients\n")
+def run_ytdlp_cascade(args, timeout=900):
+    """Try each player client in CLIENT_CASCADE until one succeeds.
+
+    Returns (result, working_client, tried). Stops early on auth errors
+    (other clients won't help) and on errors unrelated to the client."""
+    tried = []
+    last = None
+    for client in CLIENT_CASCADE:
+        tried.append(client)
         r = subprocess.run(
-            YTDLP_NO_PC + args, capture_output=True, text=True, timeout=timeout
+            YTDLP_BASE + client_argv(client) + args,
+            capture_output=True, text=True, timeout=timeout
         )
-    return r
+        if r.returncode == 0:
+            return r, client, tried
+        last = r
+        err = r.stderr or ""
+        if any(k in err for k in AUTH_ERRORS):
+            break  # needs cookies; other clients won't help
+        if not any(k in err for k in RETRYABLE_ERRORS):
+            break  # not a client problem; don't waste attempts
+        sys.stderr.write(f"ytspec: player client '{client}' failed; trying next\n")
+    return last, None, tried
+
+
+def run_ytdlp_single(client, args, timeout=900):
+    """Run once with an explicitly chosen player client."""
+    return subprocess.run(
+        YTDLP_BASE + client_argv(client) + args,
+        capture_output=True, text=True, timeout=timeout
+    )
 
 
 def video_meta(url):
@@ -111,17 +137,20 @@ def video_meta(url):
     Note: --print is always paired with --skip-download here: in this yt-dlp
     build, --print on its own skips the actual download, so metadata and
     downloading are deliberately two separate steps.
-    """
-    r = run_ytdlp_resilient(["--no-warnings", "--skip-download",
-                   "--print", "%(id)s\t%(title)s\t%(duration)s", url],
-                  timeout=120)
+
+    Returns (vid, title, duration, working_client)."""
+    r, client, tried = run_ytdlp_cascade(
+        ["--no-warnings", "--skip-download",
+         "--print", "%(id)s\t%(title)s\t%(duration)s", url],
+        timeout=120)
     lines = [ln for ln in (r.stdout or "").splitlines() if ln.strip()]
     if r.returncode != 0 or not lines:
         err = (r.stderr or "").strip().splitlines()
         hint = botcheck_hint(r.stderr)
-        raise RuntimeError((hint + " " if hint else "") +
-                           "Could not resolve that URL: " +
-                           (err[-1] if err else "yt-dlp failed"))
+        raise RuntimeError(
+            (hint + " " if hint else "") +
+            f"Could not resolve that URL (tried clients: {', '.join(tried)}): " +
+            (err[-1] if err else "yt-dlp failed"))
     tail = lines[-1]
     head, _, dur_s = tail.rpartition("\t")  # title itself may contain tabs
     vid, _, title = head.partition("\t")
@@ -132,7 +161,7 @@ def video_meta(url):
         duration = float(dur_s.strip())
     except ValueError:
         duration = 0
-    return vid, title.strip() or vid, duration
+    return vid, title.strip() or vid, duration, client
 
 
 def existing_audio(vid):
@@ -142,7 +171,7 @@ def existing_audio(vid):
 
 def fetch_audio(url):
     """Download best audio for url (or reuse cache). Returns info dict."""
-    vid, title, duration = video_meta(url)
+    vid, title, duration, client = video_meta(url)
 
     if duration and duration > MAX_DURATION_SEC:
         raise RuntimeError(
@@ -154,7 +183,8 @@ def fetch_audio(url):
 
     if not cached:
         tmpl = os.path.join(DOWNLOAD_DIR, "%(id)s.%(ext)s")
-        r = run_ytdlp_resilient([
+        # reuse the player client that worked for metadata
+        r = run_ytdlp_single(client, [
             "--no-warnings", "--no-playlist",
             "-f", "bestaudio/best",
             "-o", tmpl,
@@ -306,13 +336,15 @@ def main():
     ap.add_argument("--cookies", metavar="FILE", default=None,
                     help="Netscape-format cookies.txt for yt-dlp (same workaround)")
     ap.add_argument("--player-client", metavar="CLIENT", default="android",
-                    help="YouTube player client override for yt-dlp "
+                    help="Preferred YouTube player client for yt-dlp "
                          "(default: android, avoids datacenter bot-checks). "
-                         "Use 'default' to skip the override.")
+                         "The server falls back through android/ios/web on "
+                         "client-related failures; use 'default' to let "
+                         "yt-dlp choose first.")
     args = ap.parse_args()
 
-    global YTDLP, YTDLP_NO_PC
-    YTDLP, YTDLP_NO_PC = build_ytdlp_bases(args)
+    global YTDLP_BASE, CLIENT_CASCADE
+    YTDLP_BASE, CLIENT_CASCADE = build_server_config(args)
 
     ver = check_ytdlp()
     if not ver:
