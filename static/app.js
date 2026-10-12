@@ -191,7 +191,7 @@
     // ---- v2 experiment: pitch & vibrato (non-fatal; v1 still works if it fails)
     try {
       myToken = setStatus('Analyzing pitch… (YIN, chunked)');
-      const pitchToken = myToken;
+      let pitchToken = myToken;
       const probe = DSP.pitchTrack(mono, buf.sampleRate, { frameRange: [0, 0] });
       const totalFrames = probe.totalFrames, pitchFps = probe.fps;
       const CH = 1500;
@@ -204,7 +204,9 @@
         const cat = new Float32Array(f0raw.length + r.f0.length);
         cat.set(f0raw); cat.set(r.f0, f0raw.length);
         f0raw = cat;
-        myToken = setStatus(
+        // refresh pitchToken too: the loop's own status updates must not
+        // trip the stale check — only a *new* load should.
+        pitchToken = myToken = setStatus(
           `Analyzing pitch… ${Math.round(100 * Math.min(a + CH, totalFrames) / totalFrames)}%`);
         await new Promise((res) => setTimeout(res, 0));
       }
