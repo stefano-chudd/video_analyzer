@@ -32,12 +32,35 @@ STATIC_DIR = os.path.join(ROOT, "static")
 DOWNLOAD_DIR = os.path.join(ROOT, "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-YTDLP = [sys.executable, "-m", "yt_dlp",
-         # "android" player client avoids YouTube's datacenter bot-checks;
-         # ignored for non-YouTube URLs.
-         "--extractor-args", "youtube:player_client=android"]
+YTDLP = None  # built in main() from CLI flags (see build_ytdlp_base)
 # v1 guardrail: decoding the full audio into memory gets heavy past this.
 MAX_DURATION_SEC = 20 * 60
+
+
+def build_ytdlp_base(cli):
+    """Base yt-dlp argv: android player client + optional cookie auth."""
+    base = [sys.executable, "-m", "yt_dlp",
+            # "android" player client avoids YouTube's datacenter bot-checks;
+            # ignored for non-YouTube URLs.
+            "--extractor-args", "youtube:player_client=android"]
+    if cli.cookies_from_browser:
+        base += ["--cookies-from-browser", cli.cookies_from_browser]
+    if cli.cookies:
+        if not os.path.isfile(cli.cookies):
+            sys.stderr.write(f"ERROR: cookies file not found: {cli.cookies}\n")
+            sys.exit(1)
+        base += ["--cookies", cli.cookies]
+    return base
+
+
+def botcheck_hint(stderr_text):
+    """If yt-dlp failed on YouTube's bot-check, explain the cookie fix."""
+    s = stderr_text or ""
+    if ("not a bot" in s) or ("Sign in to confirm" in s):
+        return ("YouTube asked for a bot-check sign-in. Restart the server with "
+                "cookies, e.g.  --cookies-from-browser chrome  or  "
+                "--cookies /path/to/cookies.txt  (see README).")
+    return None
 
 
 def check_ytdlp():
@@ -69,7 +92,9 @@ def video_meta(url):
     lines = [ln for ln in (r.stdout or "").splitlines() if ln.strip()]
     if r.returncode != 0 or not lines:
         err = (r.stderr or "").strip().splitlines()
-        raise RuntimeError("Could not resolve that URL: " +
+        hint = botcheck_hint(r.stderr)
+        raise RuntimeError((hint + " " if hint else "") +
+                           "Could not resolve that URL: " +
                            (err[-1] if err else "yt-dlp failed"))
     tail = lines[-1]
     head, _, dur_s = tail.rpartition("\t")  # title itself may contain tabs
@@ -111,7 +136,9 @@ def fetch_audio(url):
         ])
         if r.returncode != 0:
             err = (r.stderr or "").strip().splitlines()
-            raise RuntimeError("Download failed: " +
+            hint = botcheck_hint(r.stderr)
+            raise RuntimeError((hint + " " if hint else "") +
+                               "Download failed: " +
                                (err[-1] if err else "yt-dlp error"))
         path = existing_audio(vid)
         if not path:
@@ -246,7 +273,16 @@ def main():
     ap = argparse.ArgumentParser(description="ytspec local server")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--cookies-from-browser", metavar="BROWSER", default=None,
+                    help="e.g. chrome — hand that browser's YouTube cookies to "
+                         "yt-dlp (workaround for 'Sign in to confirm you're not "
+                         "a bot' errors)")
+    ap.add_argument("--cookies", metavar="FILE", default=None,
+                    help="Netscape-format cookies.txt for yt-dlp (same workaround)")
     args = ap.parse_args()
+
+    global YTDLP
+    YTDLP = build_ytdlp_base(args)
 
     ver = check_ytdlp()
     if not ver:

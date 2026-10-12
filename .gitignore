@@ -4,3 +4,6 @@ __pycache__/
 .venv*/
 node_modules/
 .DS_Store
+# YouTube auth cookies — never commit these
+cookies.txt
+*.cookies.txt

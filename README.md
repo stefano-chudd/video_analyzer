@@ -24,8 +24,8 @@ Display is causal: nothing from the future is ever shown.
 
 ## Requirements
 
-- Python 3.10+
-- `pip install yt-dlp`
+- Python 3.10+ (`.python-version` pins 3.12 for uv)
+- `pip install yt-dlp` (or `uv pip install yt-dlp`, or just `uv run --with yt-dlp server.py`)
 - A browser (Chrome recommended)
 
 > Run this on your own machine, not a cloud server: YouTube bot-checks datacenter
@@ -43,6 +43,26 @@ Open http://127.0.0.1:8000, paste a link, hit **Load & analyze**, then **Play**.
 
 First load downloads the audio (takes a while for long videos); repeat loads are
 served from `downloads/` instantly.
+
+## When YouTube asks for a bot-check sign-in
+
+Sometimes YouTube answers with `Sign in to confirm you're not a bot`, even with
+the android player client. Fix: hand yt-dlp your browser cookies —
+
+```bash
+python server.py --cookies-from-browser chrome
+# or, with an exported Netscape-format cookies file:
+python server.py --cookies /path/to/cookies.txt
+```
+
+How to export: see
+[yt-dlp's FAQ](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp)
+and their
+[tips on exporting YouTube cookies](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies).
+The app also detects this failure and tells you in the status bar.
+
+Treat `cookies.txt` like a password: it grants access to your YouTube account.
+It's git-ignored — never commit or share it.
 
 ## API
 
