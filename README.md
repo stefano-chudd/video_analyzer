@@ -44,10 +44,10 @@ Open http://127.0.0.1:8000, paste a link, hit **Load & analyze**, then **Play**.
 First load downloads the audio (takes a while for long videos); repeat loads are
 served from `downloads/` instantly.
 
-## When YouTube asks for a bot-check sign-in
+## When YouTube misbehaves
 
-Sometimes YouTube answers with `Sign in to confirm you're not a bot`, even with
-the android player client. Fix: hand yt-dlp your browser cookies —
+**Bot-check** (`Sign in to confirm you're not a bot`): hand yt-dlp your
+browser cookies —
 
 ```bash
 python server.py --cookies-from-browser chrome
@@ -55,11 +55,21 @@ python server.py --cookies-from-browser chrome
 python server.py --cookies /path/to/cookies.txt
 ```
 
-How to export: see
+(Linux needs `secretstorage` installed for `--cookies-from-browser` to read
+the browser's encrypted cookie store.) How to export:
 [yt-dlp's FAQ](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp)
 and their
 [tips on exporting YouTube cookies](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies).
-The app also detects this failure and tells you in the status bar.
+The app detects this failure and tells you in the status bar.
+
+**No formats** (`Requested format is not available`): YouTube sometimes offers
+the `android` player client (our bot-check workaround) an empty format list.
+The server automatically retries once with yt-dlp's default clients. If it
+still fails, you can change or drop the override yourself:
+
+```bash
+python server.py --player-client web      # or ios, tv, default (no override)
+```
 
 Treat `cookies.txt` like a password: it grants access to your YouTube account.
 It's git-ignored — never commit or share it.

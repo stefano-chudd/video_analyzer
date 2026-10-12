@@ -32,25 +32,35 @@ STATIC_DIR = os.path.join(ROOT, "static")
 DOWNLOAD_DIR = os.path.join(ROOT, "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-YTDLP = None  # built in main() from CLI flags (see build_ytdlp_base)
+YTDLP = None       # full base argv (built in main)
+YTDLP_NO_PC = None  # same, minus the player-client override (fallback)
 # v1 guardrail: decoding the full audio into memory gets heavy past this.
 MAX_DURATION_SEC = 20 * 60
 
 
-def build_ytdlp_base(cli):
-    """Base yt-dlp argv: android player client + optional cookie auth."""
-    base = [sys.executable, "-m", "yt_dlp",
-            # "android" player client avoids YouTube's datacenter bot-checks;
-            # ignored for non-YouTube URLs.
-            "--extractor-args", "youtube:player_client=android"]
+def build_ytdlp_bases(cli):
+    """Build the yt-dlp base argv, plus a fallback without the player-client
+    override (YouTube sometimes offers the overridden client no formats)."""
+    pre = [sys.executable, "-m", "yt_dlp"]
+    suffix = []
     if cli.cookies_from_browser:
-        base += ["--cookies-from-browser", cli.cookies_from_browser]
+        suffix += ["--cookies-from-browser", cli.cookies_from_browser]
     if cli.cookies:
         if not os.path.isfile(cli.cookies):
             sys.stderr.write(f"ERROR: cookies file not found: {cli.cookies}\n")
             sys.exit(1)
-        base += ["--cookies", cli.cookies]
-    return base
+        suffix += ["--cookies", cli.cookies]
+    pc = (cli.player_client or "android").strip().lower()
+    if pc in ("default", "none", ""):
+        return pre + suffix, pre + suffix  # no override; fallback is a no-op
+    pc_args = ["--extractor-args", f"youtube:player_client={pc}"]
+    return pre + pc_args + suffix, pre + suffix
+
+
+# Kept for compatibility with earlier tests/scripts.
+def build_ytdlp_base(cli):
+    full, _ = build_ytdlp_bases(cli)
+    return full
 
 
 def botcheck_hint(stderr_text):
@@ -79,6 +89,22 @@ def run_ytdlp(args, timeout=900):
     )
 
 
+def run_ytdlp_resilient(args, timeout=900):
+    """Like run_ytdlp, but if YouTube offers the overridden player client no
+    formats ("Requested format is not available"), retry once with yt-dlp's
+    default clients. Cookies (if any) are kept for the retry."""
+    r = run_ytdlp(args, timeout)
+    if (r.returncode != 0 and YTDLP_NO_PC != YTDLP
+            and "Requested format is not available" in (r.stderr or "")):
+        sys.stderr.write(
+            "ytspec: player client offered no usable formats; "
+            "retrying with default clients\n")
+        r = subprocess.run(
+            YTDLP_NO_PC + args, capture_output=True, text=True, timeout=timeout
+        )
+    return r
+
+
 def video_meta(url):
     """Resolve id/title/duration without downloading (also validates the URL).
 
@@ -86,7 +112,7 @@ def video_meta(url):
     build, --print on its own skips the actual download, so metadata and
     downloading are deliberately two separate steps.
     """
-    r = run_ytdlp(["--no-warnings", "--skip-download",
+    r = run_ytdlp_resilient(["--no-warnings", "--skip-download",
                    "--print", "%(id)s\t%(title)s\t%(duration)s", url],
                   timeout=120)
     lines = [ln for ln in (r.stdout or "").splitlines() if ln.strip()]
@@ -128,7 +154,7 @@ def fetch_audio(url):
 
     if not cached:
         tmpl = os.path.join(DOWNLOAD_DIR, "%(id)s.%(ext)s")
-        r = run_ytdlp([
+        r = run_ytdlp_resilient([
             "--no-warnings", "--no-playlist",
             "-f", "bestaudio/best",
             "-o", tmpl,
@@ -279,10 +305,14 @@ def main():
                          "a bot' errors)")
     ap.add_argument("--cookies", metavar="FILE", default=None,
                     help="Netscape-format cookies.txt for yt-dlp (same workaround)")
+    ap.add_argument("--player-client", metavar="CLIENT", default="android",
+                    help="YouTube player client override for yt-dlp "
+                         "(default: android, avoids datacenter bot-checks). "
+                         "Use 'default' to skip the override.")
     args = ap.parse_args()
 
-    global YTDLP
-    YTDLP = build_ytdlp_base(args)
+    global YTDLP, YTDLP_NO_PC
+    YTDLP, YTDLP_NO_PC = build_ytdlp_bases(args)
 
     ver = check_ytdlp()
     if not ver:
