@@ -62,12 +62,22 @@ and their
 [tips on exporting YouTube cookies](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies).
 The app detects this failure and tells you in the status bar.
 
-**No formats** (`Requested format is not available`) or **stale page**
-(`The page needs to be reloaded`): YouTube sometimes offers one player client
-an empty or broken response. The server automatically walks a client cascade
-(`android` → `ios` → `web`) until one works, and reuses the winner for the
-download. If all fail, the error names the clients tried. You can put your own
-preference first:
+**Challenge failures** (`The page needs to be reloaded`, or warnings about
+`Signature solving failed` / `n challenge solving failed`): yt-dlp needs a
+JavaScript runtime (Deno or Node.js) to solve YouTube's signature challenges.
+Install one, e.g. `brew install deno`, and restart. The server warns at startup
+if none is found, and names this cause in the error if it happens anyway. To
+point yt-dlp at a specific runtime:
+
+```bash
+python server.py --js-runtimes deno      # or node, or node:/path/to/node
+```
+
+**No formats** (`Requested format is not available`): YouTube sometimes offers
+one player client an empty format list. The server automatically walks a client
+cascade (`android` → `ios` → `web`) until one works, and reuses the winner for
+the download. If all fail, the error names the clients tried. You can put your
+own preference first:
 
 ```bash
 python server.py --player-client web      # or ios, android, default (yt-dlp chooses)

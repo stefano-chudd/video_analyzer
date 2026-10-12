@@ -60,6 +60,8 @@ def build_server_config(cli):
             sys.stderr.write(f"ERROR: cookies file not found: {cli.cookies}\n")
             sys.exit(1)
         base += ["--cookies", cli.cookies]
+    if cli.js_runtimes:
+        base += ["--js-runtimes", cli.js_runtimes]
     pc = (cli.player_client or "android").strip().lower()
     cascade = []
     if pc == "default":
@@ -79,6 +81,33 @@ def botcheck_hint(stderr_text):
         return ("YouTube asked for a bot-check sign-in. Restart the server with "
                 "cookies, e.g.  --cookies-from-browser chrome  or  "
                 "--cookies /path/to/cookies.txt  (see README).")
+    return None
+
+
+def challenge_hint(stderr_text):
+    """If YouTube's signature/n challenges couldn't be solved, point at the
+    missing JavaScript runtime (this surfaces as 'The page needs to be
+    reloaded' / 'Requested format is not available')."""
+    s = stderr_text or ""
+    if "challenge solving failed" in s or "Signature solving failed" in s:
+        return ("yt-dlp could not solve YouTube's signature/n challenges: "
+                "install a JavaScript runtime (Deno or Node.js) and restart "
+                "the server. See https://github.com/yt-dlp/yt-dlp/wiki/EJS")
+    return None
+
+
+def failure_hints(stderr_text):
+    """Combine all applicable failure hints into a prefix string."""
+    hints = [h for h in (botcheck_hint(stderr_text), challenge_hint(stderr_text)) if h]
+    return (" ".join(hints) + " ") if hints else ""
+
+
+def check_js_runtime():
+    """Best-effort PATH check for a JS runtime yt-dlp can use."""
+    import shutil
+    for rt in ("deno", "node", "bun", "qjs"):
+        if shutil.which(rt):
+            return rt
     return None
 
 
@@ -146,9 +175,8 @@ def video_meta(url):
     lines = [ln for ln in (r.stdout or "").splitlines() if ln.strip()]
     if r.returncode != 0 or not lines:
         err = (r.stderr or "").strip().splitlines()
-        hint = botcheck_hint(r.stderr)
         raise RuntimeError(
-            (hint + " " if hint else "") +
+            failure_hints(r.stderr) +
             f"Could not resolve that URL (tried clients: {', '.join(tried)}): " +
             (err[-1] if err else "yt-dlp failed"))
     tail = lines[-1]
@@ -192,8 +220,7 @@ def fetch_audio(url):
         ])
         if r.returncode != 0:
             err = (r.stderr or "").strip().splitlines()
-            hint = botcheck_hint(r.stderr)
-            raise RuntimeError((hint + " " if hint else "") +
+            raise RuntimeError(failure_hints(r.stderr) +
                                "Download failed: " +
                                (err[-1] if err else "yt-dlp error"))
         path = existing_audio(vid)
@@ -341,10 +368,21 @@ def main():
                          "The server falls back through android/ios/web on "
                          "client-related failures; use 'default' to let "
                          "yt-dlp choose first.")
+    ap.add_argument("--js-runtimes", metavar="RUNTIMES", default=None,
+                    help="pass through to yt-dlp --js-runtimes "
+                         "(e.g. 'deno' or 'node:/path/to/node') for YouTube's "
+                         "signature/n challenges")
     args = ap.parse_args()
 
     global YTDLP_BASE, CLIENT_CASCADE
     YTDLP_BASE, CLIENT_CASCADE = build_server_config(args)
+
+    if not check_js_runtime() and not args.js_runtimes:
+        sys.stderr.write(
+            "WARNING: no JavaScript runtime (deno/node/bun/qjs) found on PATH; "
+            "yt-dlp cannot solve YouTube's signature/n challenges and some "
+            "videos will fail with 'The page needs to be reloaded'. "
+            "See https://github.com/yt-dlp/yt-dlp/wiki/EJS\n")
 
     ver = check_ytdlp()
     if not ver:
