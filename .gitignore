@@ -7,3 +7,5 @@ node_modules/
 # YouTube auth cookies — never commit these
 cookies.txt
 *.cookies.txt
+# Generated pitch-test audio (reproducible via qa/gen_pitch_tests.py)
+qa/*.wav

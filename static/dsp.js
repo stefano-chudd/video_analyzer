@@ -299,6 +299,22 @@
       }
       if (tauEst < 0) continue; // unvoiced
 
+      // Octave-up correction: creaky/breathy voice produces period doubling
+      // (a strong subharmonic at f0/2), and YIN then locks onto the longer
+      // period, reporting one octave low. But a TRUE low tone is not periodic
+      // at double its frequency, so check the normalized difference at half
+      // the lag: if it is also strongly periodic there, the real pitch is
+      // 2*fEst and we take the local minimum near the shorter lag instead.
+      // (Measured: period-doubled fry gives cm[tau/2] ~0.35-0.4, a genuine
+      // low tone gives ~1.5 — wide margin, threshold sits between.)
+      const octThr = opts.octaveThreshold !== undefined ? opts.octaveThreshold : 0.6;
+      const tauUp = Math.round(tauEst / 2);
+      if (tauUp >= minTau && cm[tauUp] < octThr) {
+        let t = tauUp;
+        while (t + 1 <= maxTau && cm[t + 1] < cm[t]) t++;
+        tauEst = t;
+      }
+
       // parabolic interpolation on the normalized difference
       if (tauEst > minTau && tauEst < maxTau) {
         const y0 = cm[tauEst - 1], y1 = cm[tauEst], y2 = cm[tauEst + 1];
